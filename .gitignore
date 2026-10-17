@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+runs/
+.pytest_cache/
+data/train/
+data/dev/
