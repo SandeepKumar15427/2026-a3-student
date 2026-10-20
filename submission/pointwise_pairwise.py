@@ -55,14 +55,16 @@ def set_seed(seed: int) -> None:
     """TODO(1): make training reproducible -- seed Python's `random`, NumPy,
     and torch (torch.manual_seed). Staff check two runs with the same seed
     give identical weights."""
-    raise NotImplementedError("TODO(1): set_seed")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 def pointwise_loss(scores: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     """TODO(2): mean squared error between predicted scores and graded labels
     (both 1-D tensors of equal length). Returns a scalar tensor.
     Example: scores=[1, 2], labels=[0, 2] -> ((1-0)^2 + (2-2)^2) / 2 = 0.5"""
-    raise NotImplementedError("TODO(2): pointwise_loss")
+    return torch.mean((scores - labels) ** 2)
 
 
 def make_pairs(qids, labels, pairs_per_query: int, rng: np.random.RandomState) -> np.ndarray:
@@ -79,7 +81,33 @@ def make_pairs(qids, labels, pairs_per_query: int, rng: np.random.RandomState) -
     reproducible. Never build the pairs of the whole TRAIN split at once.
     Example: qids=[a,a,a,b,b], labels=[2,0,1,1,1], pairs_per_query large ->
     the 3 pairs (0,1), (0,2), (2,1); query b has only ties -> no pairs."""
-    raise NotImplementedError("TODO(3): make_pairs")
+    groups = {}
+    for row_index, qid in enumerate(qids):
+        groups.setdefault(qid, []).append(row_index)
+
+    result = []
+    labels = np.asarray(labels)
+    for row_indices in groups.values():
+        candidates = []
+        for left_pos in range(len(row_indices)):
+            for right_pos in range(left_pos + 1, len(row_indices)):
+                left, right = row_indices[left_pos], row_indices[right_pos]
+                if labels[left] == labels[right]:
+                    continue
+                if labels[left] > labels[right]:
+                    candidates.append((left, right))
+                else:
+                    candidates.append((right, left))
+        if pairs_per_query <= 0 or not candidates:
+            continue
+        if len(candidates) > pairs_per_query:
+            chosen = rng.choice(len(candidates), size=pairs_per_query, replace=False)
+            candidates = [candidates[int(i)] for i in chosen]
+        result.extend(candidates)
+
+    if not result:
+        return np.empty((0, 2), dtype=np.int64)
+    return np.asarray(result, dtype=np.int64)
 
 
 def ranknet_loss(s_preferred: torch.Tensor, s_other: torch.Tensor) -> torch.Tensor:
@@ -89,7 +117,7 @@ def ranknet_loss(s_preferred: torch.Tensor, s_other: torch.Tensor) -> torch.Tens
     torch.logaddexp(0, -d) with d = s_i - s_j -- not a raw exp.
     Example: s_preferred=[2, 0], s_other=[0, 0] ->
     mean(log(1+e^-2), log 2) = mean(0.126928, 0.693147) = 0.410038"""
-    raise NotImplementedError("TODO(4): ranknet_loss")
+    return torch.nn.functional.softplus(-(s_preferred - s_other)).mean()
 
 
 def pointwise_step(network: nn.Module, optimizer, x: torch.Tensor, y: torch.Tensor) -> float:
@@ -97,7 +125,12 @@ def pointwise_step(network: nn.Module, optimizer, x: torch.Tensor, y: torch.Tens
     gradients, forward pass, pointwise_loss, loss.backward(), optimizer.step().
     Return the loss as a float. (Forgetting optimizer.zero_grad() is the classic
     bug: gradients silently accumulate across batches.)"""
-    raise NotImplementedError("TODO(5): pointwise_step")
+    optimizer.zero_grad()
+    scores = network(x).reshape(-1)
+    loss = pointwise_loss(scores, y.reshape(-1))
+    loss.backward()
+    optimizer.step()
+    return float(loss.detach().item())
 
 
 def pairwise_step(network: nn.Module, optimizer, x_preferred: torch.Tensor, x_other: torch.Tensor) -> float:
@@ -106,7 +139,13 @@ def pairwise_step(network: nn.Module, optimizer, x_preferred: torch.Tensor, x_ot
     relevant document. Run both through the SAME network (shared weights),
     ranknet_loss on the two score vectors, backward, step. Return the loss as a
     float. Staff check one step on a pair raises s_preferred - s_other."""
-    raise NotImplementedError("TODO(5): pairwise_step")
+    optimizer.zero_grad()
+    preferred_scores = network(x_preferred).reshape(-1)
+    other_scores = network(x_other).reshape(-1)
+    loss = ranknet_loss(preferred_scores, other_scores)
+    loss.backward()
+    optimizer.step()
+    return float(loss.detach().item())
 
 
 # ---- provided helpers -------------------------------------------------------
@@ -152,5 +191,48 @@ def train_model(kind: str, train, dev, *, seed: int = 0, epochs: int = 20, batch
     #   d) early stopping: remember the best dev nDCG@10 and a deep copy of
     #      network.state_dict(); stop after `patience` epochs without improvement;
     #   e) at the end restore the best weights: network.load_state_dict(best_state).
-    raise NotImplementedError("TODO(6): the training loop in train_model")
+    best_score = -float("inf")
+    best_state = copy.deepcopy(network.state_dict())
+    bad_epochs = 0
+
+    for epoch in range(epochs):
+        network.train()
+        if kind == "pointwise":
+            examples = rng.permutation(len(X))
+        else:
+            pairs = make_pairs(q, y, pairs_per_query, rng)
+            examples = rng.permutation(len(pairs))
+
+        losses = []
+        for start in range(0, len(examples), batch_size):
+            batch = examples[start:start + batch_size]
+            if len(batch) == 0:
+                continue
+            if kind == "pointwise":
+                idx = np.asarray(batch, dtype=np.int64)
+                losses.append(pointwise_step(network, optimizer, Xt[idx], yt[idx]))
+            else:
+                pair_batch = pairs[np.asarray(batch, dtype=np.int64)]
+                losses.append(pairwise_step(network, optimizer,
+                                             Xt[pair_batch[:, 0]], Xt[pair_batch[:, 1]]))
+
+        network.eval()
+        with torch.no_grad():
+            ndcg = dev_ndcg(make_scorer(network, standardizer), Xd, yd, qd)
+        train_loss = float(np.mean(losses)) if losses else 0.0
+        record = {"epoch": epoch + 1, "train_loss": train_loss, "dev_ndcg@10": float(ndcg)}
+        history.append(record)
+        if verbose:
+            print(record)
+
+        if ndcg > best_score:
+            best_score = ndcg
+            best_state = copy.deepcopy(network.state_dict())
+            bad_epochs = 0
+        else:
+            bad_epochs += 1
+            if bad_epochs >= patience:
+                break
+
+    network.load_state_dict(best_state)
     return network, standardizer, history
