@@ -84,3 +84,28 @@ def combmnz_scores(base_scores: Dict[str, Dict[str, float]],
             if normalized[doc_id] > 0.0:
                 appearances[doc_id] += 1
     return {doc_id: combined[doc_id] * appearances[doc_id] for doc_id in ids}
+
+
+def weighted_combmnz_scores(base_scores: Dict[str, Dict[str, float]],
+                            weights: Dict[str, float],
+                            channels: Optional[Iterable[str]] = None) -> Dict[str, float]:
+    """Weighted CombMNZ using per-channel min-max normalization.
+
+    ``weights`` changes each channel's contribution to the normalized sum;
+    the CombMNZ multiplier still counts channels whose normalized score is
+    positive. Missing weights default to zero, which makes the selected
+    channel set explicit and deterministic.
+    """
+    ids = list(base_scores)
+    selected = _channels(base_scores, channels)
+    combined = {doc_id: 0.0 for doc_id in ids}
+    appearances = {doc_id: 0 for doc_id in ids}
+    for channel in selected:
+        channel_values = {doc_id: base_scores[doc_id][channel] for doc_id in ids}
+        normalized = minmax_normalize(channel_values)
+        weight = float(weights.get(channel, 0.0))
+        for doc_id in ids:
+            combined[doc_id] += weight * normalized[doc_id]
+            if normalized[doc_id] > 0.0:
+                appearances[doc_id] += 1
+    return {doc_id: combined[doc_id] * appearances[doc_id] for doc_id in ids}

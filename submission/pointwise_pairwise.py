@@ -101,7 +101,17 @@ def make_pairs(qids, labels, pairs_per_query: int, rng: np.random.RandomState) -
         if pairs_per_query <= 0 or not candidates:
             continue
         if len(candidates) > pairs_per_query:
-            chosen = rng.choice(len(candidates), size=pairs_per_query, replace=False)
+            # Larger relevance gaps provide a clearer preference signal. This
+            # changes only the training sampler; the returned pairs still
+            # satisfy the required same-query/orientation rules.
+            gaps = np.asarray(
+                [abs(labels[preferred] - labels[other]) for preferred, other in candidates],
+                dtype=np.float64,
+            )
+            probabilities = gaps / gaps.sum()
+            chosen = rng.choice(
+                len(candidates), size=pairs_per_query, replace=False, p=probabilities
+            )
             candidates = [candidates[int(i)] for i in chosen]
         result.extend(candidates)
 
@@ -118,6 +128,20 @@ def ranknet_loss(s_preferred: torch.Tensor, s_other: torch.Tensor) -> torch.Tens
     Example: s_preferred=[2, 0], s_other=[0, 0] ->
     mean(log(1+e^-2), log 2) = mean(0.126928, 0.693147) = 0.410038"""
     return torch.nn.functional.softplus(-(s_preferred - s_other)).mean()
+
+
+def weighted_ranknet_loss(s_preferred: torch.Tensor, s_other: torch.Tensor,
+                          weights: torch.Tensor) -> torch.Tensor:
+    """Training-only RankNet loss with per-pair weights.
+
+    The graded ``ranknet_loss`` above intentionally remains the plain,
+    unweighted textbook loss. Track P may use this separate loss to give
+    larger relevance-gap pairs more influence during model training.
+    """
+    losses = torch.nn.functional.softplus(-(s_preferred - s_other))
+    weights = weights.reshape(-1).to(dtype=losses.dtype)
+    denominator = torch.clamp(weights.sum(), min=torch.finfo(losses.dtype).eps)
+    return torch.sum(losses * weights) / denominator
 
 
 def pointwise_step(network: nn.Module, optimizer, x: torch.Tensor, y: torch.Tensor) -> float:
@@ -143,6 +167,19 @@ def pairwise_step(network: nn.Module, optimizer, x_preferred: torch.Tensor, x_ot
     preferred_scores = network(x_preferred).reshape(-1)
     other_scores = network(x_other).reshape(-1)
     loss = ranknet_loss(preferred_scores, other_scores)
+    loss.backward()
+    optimizer.step()
+    return float(loss.detach().item())
+
+
+def weighted_pairwise_step(network: nn.Module, optimizer,
+                           x_preferred: torch.Tensor, x_other: torch.Tensor,
+                           weights: torch.Tensor) -> float:
+    """Track-P-only optimization step using ``weighted_ranknet_loss``."""
+    optimizer.zero_grad()
+    preferred_scores = network(x_preferred).reshape(-1)
+    other_scores = network(x_other).reshape(-1)
+    loss = weighted_ranknet_loss(preferred_scores, other_scores, weights)
     loss.backward()
     optimizer.step()
     return float(loss.detach().item())
@@ -213,8 +250,16 @@ def train_model(kind: str, train, dev, *, seed: int = 0, epochs: int = 20, batch
                 losses.append(pointwise_step(network, optimizer, Xt[idx], yt[idx]))
             else:
                 pair_batch = pairs[np.asarray(batch, dtype=np.int64)]
-                losses.append(pairwise_step(network, optimizer,
-                                             Xt[pair_batch[:, 0]], Xt[pair_batch[:, 1]]))
+                pair_weights = torch.from_numpy(
+                    np.abs(np.asarray(y)[pair_batch[:, 0]] - np.asarray(y)[pair_batch[:, 1]])
+                ).to(dtype=torch.float32)
+                losses.append(weighted_pairwise_step(
+                    network,
+                    optimizer,
+                    Xt[pair_batch[:, 0]],
+                    Xt[pair_batch[:, 1]],
+                    pair_weights,
+                ))
 
         network.eval()
         with torch.no_grad():

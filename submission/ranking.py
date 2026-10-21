@@ -21,9 +21,18 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from submission.fusion import rrf_scores
+from submission.fusion import weighted_combmnz_scores
 
 _MODEL = None
+
+# Selected from the fusion sweep on the released DEV split. The order is
+# explicit by channel name rather than relying on feature indices here.
+_FUSION_WEIGHTS = {
+    "bm25_whole_document": 0.50,
+    "bm25_title": 0.25,
+    "lmir_dir_whole_document": 0.25,
+    "lmir_jm_whole_document": 0.00,
+}
 
 
 def prepare(model_path: str) -> None:
@@ -44,11 +53,10 @@ def _unique(ids: List[str]) -> List[str]:
 def fuse_candidates(qid: str, candidate_doc_ids: List[str], base_scores: Dict[str, Dict[str, float]],
                     k: int) -> List[Tuple[str, float]]:
     ids = _unique(candidate_doc_ids)
-    try:
-        fused = rrf_scores({d: base_scores[d] for d in ids})
-    except NotImplementedError:
-        # stand-in until you implement rrf_scores (TODO(fusion-0)): sort by the BM25 channel
-        fused = {d: base_scores[d]["bm25_whole_document"] for d in ids}
+    fused = weighted_combmnz_scores(
+        {d: base_scores[d] for d in ids},
+        _FUSION_WEIGHTS,
+    )
     ranked = sorted(ids, key=lambda d: -fused[d])  # stable: ties keep candidate order
     return [(d, fused[d]) for d in ranked[:k]]
 
