@@ -67,6 +67,8 @@ def augment_query_features(X, mode="derived"):
         names = ("rank",)
     elif mode == "rank_all":
         names = ("rank_all",)
+    elif mode == "rank_all_agreement":
+        names = ("rank_all", "agreement")
     elif mode in ("differences", "aggregates", "agreement"):
         names = (mode,)
     elif mode in ("derived", "all"):

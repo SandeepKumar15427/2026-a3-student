@@ -32,7 +32,7 @@ def main():
     ap.add_argument("--lambda-l2", type=float, default=1.0)
     ap.add_argument("--feature-fraction", type=float, default=0.8)
     ap.add_argument("--bagging-fraction", type=float, default=0.8)
-    ap.add_argument("--feature-engineering", choices=["none", "rank_all"], default="none")
+    ap.add_argument("--feature-engineering", choices=["none", "rank_all", "rank_all_agreement"], default="none")
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
