@@ -16,6 +16,7 @@ import argparse
 
 from harness.feature_io import read_svmlight_ltr, stack
 from scripts.lambdamart_utils import default_params, fit, ndcg10
+from submission.feature_engineering import augment_dataset
 
 
 def _resolve(path, name):
@@ -31,6 +32,11 @@ def main():
     ap.add_argument("--num-leaves", type=int, default=15)
     ap.add_argument("--learning-rate", type=float, default=0.05)
     ap.add_argument("--min-data-in-leaf", type=int, default=50)
+    ap.add_argument("--lambda-l2", type=float, default=1.0)
+    ap.add_argument("--feature-fraction", type=float, default=0.8)
+    ap.add_argument("--bagging-fraction", type=float, default=0.8)
+    ap.add_argument("--feature-engineering", choices=["none", "rank_all"], default="none")
+    ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--use-dev", action="store_true", help="also train on dev (lowers Track C; declare it)")
     args = ap.parse_args()
@@ -45,7 +51,15 @@ def main():
     else:
         train_used = train
     X, y, q = stack(train_used)
-    params = default_params(args.num_leaves, args.learning_rate, args.min_data_in_leaf, seed=args.seed)
+    X = augment_dataset(X, q, args.feature_engineering)
+    params = default_params(
+        args.num_leaves, args.learning_rate, args.min_data_in_leaf,
+        lambda_l2=args.lambda_l2, seed=args.seed,
+        feature_fraction=args.feature_fraction,
+        bagging_fraction=args.bagging_fraction,
+        bagging_freq=1 if args.bagging_fraction < 1.0 else 0,
+        num_threads=args.threads,
+    )
     model = fit(X, y, q, params, args.trees)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     model.save_model(args.out)
@@ -53,6 +67,7 @@ def main():
     print(f"train nDCG@10 = {ndcg10(model, X, y, q):.4f}")
     if dev is not None and not args.use_dev:
         Xd, yd, qd = stack(dev)
+        Xd = augment_dataset(Xd, qd, args.feature_engineering)
         print(f"dev   nDCG@10 = {ndcg10(model, Xd, yd, qd):.4f}")
 
 

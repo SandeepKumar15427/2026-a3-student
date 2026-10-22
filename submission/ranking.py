@@ -22,8 +22,10 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from submission.fusion import weighted_combmnz_scores
+from submission.feature_engineering import augment_query_features
 
 _MODEL = None
+_MODEL_FEATURES = None
 
 # Selected from the fusion sweep on the released DEV split. The order is
 # explicit by channel name rather than relying on feature indices here.
@@ -36,7 +38,7 @@ _FUSION_WEIGHTS = {
 
 
 def prepare(model_path: str) -> None:
-    global _MODEL
+    global _MODEL, _MODEL_FEATURES
     if not os.path.isfile(model_path):
         raise FileNotFoundError(
             f"trained model artifact not found at {model_path!r}; run scripts/train_model.py and "
@@ -44,6 +46,7 @@ def prepare(model_path: str) -> None:
         )
     import lightgbm as lgb
     _MODEL = lgb.Booster(model_file=model_path)
+    _MODEL_FEATURES = _MODEL.num_feature()
 
 
 def _unique(ids: List[str]) -> List[str]:
@@ -69,6 +72,11 @@ def rerank_with_ltr(qid: str, candidate_doc_ids: List[str], features: Dict[str, 
     if not ids:
         return []
     X = np.asarray([features[d] for d in ids], dtype=np.float64)
+    if X.shape[1] != _MODEL_FEATURES:
+        if X.shape[1] == 136 and _MODEL_FEATURES == 272:
+            X = augment_query_features(X, "rank_all")
+        else:
+            raise ValueError(f"model expects {_MODEL_FEATURES} features but received {X.shape[1]}")
     preds = _MODEL.predict(X)
     order = np.argsort(-preds, kind="stable")
     return [(ids[i], float(preds[i])) for i in order[:k]]

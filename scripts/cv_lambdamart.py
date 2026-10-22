@@ -18,6 +18,7 @@ import numpy as np
 from harness.cv import grouped_kfold
 from harness.feature_io import read_svmlight_ltr, stack
 from scripts.lambdamart_utils import default_params, fit, ndcg10
+from submission.feature_engineering import augment_dataset
 
 
 def main():
@@ -28,12 +29,26 @@ def main():
     ap.add_argument("--num-leaves", type=int, default=15)
     ap.add_argument("--learning-rate", type=float, default=0.05)
     ap.add_argument("--min-data-in-leaf", type=int, default=50)
+    ap.add_argument("--lambda-l2", type=float, default=1.0)
+    ap.add_argument("--feature-fraction", type=float, default=0.8)
+    ap.add_argument("--bagging-fraction", type=float, default=0.8)
+    ap.add_argument("--feature-engineering", choices=["none", "rank_all"], default="none")
+    ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
     path = os.path.join(args.train, "train.txt") if os.path.isdir(args.train) else args.train
     X, y, q = stack(read_svmlight_ltr(path))
+    X = augment_dataset(X, q, args.feature_engineering)
     folds = grouped_kfold(q, k=args.folds, seed=args.seed)
-    params = default_params(args.num_leaves, args.learning_rate, args.min_data_in_leaf, seed=args.seed)
+    params = default_params(
+        args.num_leaves, args.learning_rate, args.min_data_in_leaf,
+        lambda_l2=args.lambda_l2, seed=args.seed,
+        feature_fraction=args.feature_fraction,
+        bagging_fraction=args.bagging_fraction,
+        bagging_freq=1 if args.bagging_fraction < 1.0 else 0,
+        num_threads=args.threads,
+    )
+    print(f"features={X.shape[1]} mode={args.feature_engineering}")
     print(f"{'trees':>6} {'train':>8} {'val':>8} {'val/train':>10}")
     for n in args.trees:
         tr, va = [], []
